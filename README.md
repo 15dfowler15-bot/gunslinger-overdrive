@@ -29,3 +29,11 @@ When a normal surviving Split multiplier and one or more participating resolved 
 - No engine/math changes from v32.5.
 - Re-encoded embedded artwork at display-appropriate resolutions to reduce standalone HTML memory/payload.
 - Added iOS/mobile viewport and touch-action safeguards plus mobile debug-panel sizing.
+
+
+## v32.7 — matching held symbols continue respins
+- During active respins, a newly rolled exact regular symbol matching a symbol type already held from a winning payline counts as progression.
+- It grants another respin even if it does not create a new payline or increase the payout.
+- Wilds and special symbols do not count as these extra matching-symbol continuations.
+- This rule lives in the core RNG paid-round cycle, so simulation/RTP measurement uses the same behavior.
+- Simulation reports matchingSymbolContinuationFrequency.

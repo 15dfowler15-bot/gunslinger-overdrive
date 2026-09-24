@@ -60,3 +60,12 @@ When a normal surviving Split multiplier and one or more participating resolved 
 - Forced SPIN_START / REELS_STOP events carry forceReelAnimation so a forced outcome cannot silently snap even if Instant playback was left enabled.
 - Added a CSS-transition fallback when Web Animations API is unavailable.
 - The debug console and math inspector display BUILD v32.10 / FORCED EXACT SPIN so stale browser cache is immediately obvious.
+
+
+## v32.11 — natural forced outcome scenarios
+- Force Outcome now generates a visible legal game scenario instead of fabricating an arithmetic board.
+- Every forced PASS is validated against the actual resolved symbols on each winning payline; a winning symbol must be physically present or legitimately substituted by a visible Wild/xNudge.
+- Repeated requests for the same target can use different payline decompositions, symbols, line placements, and legal xNudge routes.
+- Large targets may use a visible loaded revolver + Sheriff sequence that is already present on the landed board before it fires.
+- Forced Gray values are restricted to the real +2 / +3 / +10 / +100 values only.
+- Normal unforced gameplay remains on the RNG paid-round engine.

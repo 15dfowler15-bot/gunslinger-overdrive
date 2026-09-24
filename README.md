@@ -37,3 +37,10 @@ When a normal surviving Split multiplier and one or more participating resolved 
 - Wilds and special symbols do not count as these extra matching-symbol continuations.
 - This rule lives in the core RNG paid-round cycle, so simulation/RTP measurement uses the same behavior.
 - Simulation reports matchingSymbolContinuationFrequency.
+
+
+## v32.8 — persistent live RTP setting
+- Custom RTP is now a persistent machine-math setting, not a one-shot armed override.
+- Unchecking Use Default RTP and entering a value immediately changes the RNG profile for every subsequent normal paid spin until reset.
+- Simulation and live gameplay now read the same persistent RTP setting.
+- ARM NEXT SPIN no longer captures/freezes RTP; it remains reserved for one-shot forced/debug constraints.

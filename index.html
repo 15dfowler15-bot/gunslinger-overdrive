@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
-<!-- Gunslinger Overdrive v31: connected paylines / live debug queue / rapid-fire cadence -->
+<!-- Gunslinger Overdrive v32.10: exact forced outcomes through reel-spin playback pipeline -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Gunslinger Overdrive — Play Money Demo</title>
@@ -124,7 +124,7 @@ button,input,select{font:inherit}.cabinet-shell{width:min(1180px,96vw);margin:0 
 
   <aside id="debugPanel" class="debug-panel" aria-hidden="true">
     <div class="debug-head">
-      <div><small>DEVELOPER CONSOLE</small><h2>MACHINE ROOM</h2></div>
+      <div><small>DEVELOPER CONSOLE · BUILD v32.10</small><h2>MACHINE ROOM</h2></div>
       <button id="debugClose">×</button>
     </div>
 
@@ -2210,12 +2210,15 @@ class SlotEngine {
     if(resolution.nudgeRequired){this.state.resolvedNudgeX={};this.state.nudgeXColumns={};this.state.nudgeMeters={1:0,2:0,3:0};this.state.pendingNudgeX={};}
     if(recordEvents){
       const preState={...deepClone(beforeSpin),balance:this.balance,bet:this.bet,seed:this.seed,volatility:this.debug.volatility,scenario:this.scenario};
-      events.push({type:'SPIN_START',message:config?'DEBUG NEXT SPIN CONSUMED':'OUTCOME SELECTED',payload:{sequenceId,targetWinX:targetBP/100,targetRtp:config?this.effectiveRtp(config):Number(this.debug.defaultRtp||DEFAULT_RTP),debugConfig:config?deepClone(config):null},state:preState});
+      // Forced outcomes still enter the same presentation contract as a real paid spin:
+      // SPIN_START -> animated reel travel -> REELS_STOP -> features -> payout.
+      // The exact resolver chooses the landing board; it never gets to visually swap it in.
+      events.push({type:'SPIN_START',message:config?'DEBUG FORCED SPIN':'OUTCOME SELECTED',payload:{sequenceId,targetWinX:targetBP/100,targetRtp:this.effectiveRtp(config),debugConfig:config?deepClone(config):null,forcedOutcome:true,forceReelAnimation:true},state:preState});
     }
 
     if(resolution.impossible){
       this.randomizeLossBoard();this.state.active=false;this.state.evaluatedWinBP=0;this.state.validationStatus='IMPOSSIBLE';this.state.sequenceWin=0;
-      this.emit(events,'REELS_STOP','Constraint resolver could not construct requested exact outcome',{targetWinX:targetBP/100},recordEvents);
+      this.emit(events,'REELS_STOP','Forced spin landed fallback board',{targetWinX:targetBP/100,forcedOutcome:true,forceReelAnimation:true},recordEvents);
       this.emit(events,'RESOLUTION_FAILED',resolution.message,{targetBP,resolution:deepClone(resolution)},recordEvents);
       this.emit(events,'BOARD_VALIDATION','IMPOSSIBLE CONFIGURATION',{targetBP,evaluatedBP:0,exact:false,message:resolution.message},recordEvents);
       this.emit(events,'WIN_EVALUATE','NO CREDIT — DEBUG CONSTRAINTS IMPOSSIBLE',{wins:[],totalWin:0,targetWinX:targetBP/100,evaluatedWinX:0,validation:'IMPOSSIBLE',resolution:deepClone(resolution)},recordEvents);
@@ -2225,7 +2228,7 @@ class SlotEngine {
     }
 
     // resolveTargetOutcome leaves the validated base board in state.
-    this.emit(events,'REELS_STOP','Board Resolver landed randomized legal board',{targetWinX:targetBP/100,method:resolution.method,signature:this.boardSignature()},recordEvents);
+    this.emit(events,'REELS_STOP','Forced spin landed exact legal board',{targetWinX:targetBP/100,method:resolution.method,signature:this.boardSignature(),forcedOutcome:true,forceReelAnimation:true},recordEvents);
 
     if(config?.shooterConfig?.length){
       const ids=this.allRevolvers().map(r=>r.id);
@@ -2255,7 +2258,7 @@ class SlotEngine {
     const credited=this.state.validationStatus==='PASS'?totalWin:0;
     resolution.paylineSummary=wins.map(w=>({lineIndex:w.lineIndex,symbol:w.symbol,count:w.count,basePayBP:w.basePayBP,finalPayBP:w.finalPayBP,featureMultiplier:w.featureMultiplier,amount:w.amount}));
     resolution.message=`${resolution.message} · ${wins.length} winning payline${wins.length===1?'':'s'} · Shooter Required: ${resolution.shooterRequired?'YES':'NO'} · xNudge Required: ${resolution.nudgeRequired?'YES':'NO'} · Multiplier Required: ${resolution.multiplierRequired?'YES':'NO'}`;
-    const result={sequenceId,totalWin:credited,finalWinBP:evaluatedBP,respins:0,wins:deepClone(wins),state:this.snapshot(),seed:this.seed,volatility:this.debug.volatility,targetWinX:targetBP/100,resolvedWinX:resolution.resolvedBP/100,evaluatedWinX:evaluatedBP/100,validation:this.state.validationStatus,resolution:deepClone(resolution)};
+    const result={sequenceId,totalWin:credited,finalWinBP:evaluatedBP,respins:0,wins:deepClone(wins),state:this.snapshot(),seed:this.seed,volatility:this.debug.volatility,targetWinX:targetBP/100,resolvedWinX:resolution.resolvedBP/100,evaluatedWinX:evaluatedBP/100,validation:this.state.validationStatus,forcedOutcome:true,spinPipeline:'FORCED_EXACT_SPIN',resolution:deepClone(resolution)};
     this.history.unshift(result);this.history=this.history.slice(0,100);return {events,result};
   }
 
@@ -2857,8 +2860,8 @@ function renderSingleReel(state,r){
     }
   }
 }
-function startFullReelSpin(nextState){
-  if(engine.debug.instant){renderState(nextState);return;}
+function startFullReelSpin(nextState,{forceAnimation=false}={}){
+  if(engine.debug.instant && !forceAnimation){renderState(nextState);return;}
   clearFullReelSpin();
   const speedScale=engine.debug.animationSpeed||1;
   [...refs.reels.children].forEach((reelEl,r)=>{
@@ -2880,6 +2883,14 @@ function startFullReelSpin(nextState){
     const duration=Math.max(760,(980+r*170)/speedScale);
     let animation=null;
     let finished=Promise.resolve();
+    const settle=()=>{
+      renderSingleReel(nextState,r);
+      windowEl.remove();
+      reelEl.classList.remove('reel-spinning');
+      frames.forEach(f=>f.classList.remove('spin-locked'));
+      reelSpinSessions.delete(r);
+      tone(150+r*28,.045,'square',.025);
+    };
     if(typeof strip.animate==='function'){
       animation=strip.animate([
         {offset:0,transform:`translateY(${startOffset}px)`,filter:'blur(1.05px) brightness(1.05)'},
@@ -2887,20 +2898,23 @@ function startFullReelSpin(nextState){
         {offset:.86,transform:`translateY(${startOffset*.065}px)`,filter:'blur(.28px) brightness(1.015)'},
         {offset:1,transform:'translateY(0px)',filter:'blur(0px) brightness(1)'}
       ],{duration,easing:'cubic-bezier(.12,.54,.12,1)',fill:'forwards'});
-      finished=animation.finished.catch(()=>{}).then(()=>{
-        renderSingleReel(nextState,r);
-        windowEl.remove();
-        reelEl.classList.remove('reel-spinning');
-        frames.forEach(f=>f.classList.remove('spin-locked'));
-        reelSpinSessions.delete(r);
-        tone(150+r*28,.045,'square',.025);
+      finished=animation.finished.catch(()=>{}).then(settle);
+    }else{
+      // Safari/WebView fallback: never let an exact forced result become a silent board swap.
+      finished=new Promise(resolve=>{
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{
+          strip.style.transition=`transform ${duration}ms cubic-bezier(.12,.54,.12,1), filter ${duration}ms linear`;
+          strip.style.transform='translateY(0px)';
+          strip.style.filter='blur(0px) brightness(1)';
+          setTimeout(()=>{settle();resolve();},duration+34);
+        }));
       });
     }
-    reelSpinSessions.set(r,{reelEl,window:windowEl,strip,animation,step,finished});
+    reelSpinSessions.set(r,{reelEl,window:windowEl,strip,animation,step,finished,forceAnimation});
   });
 }
-async function stopFullReels(nextState){
-  if(engine.debug.instant){clearFullReelSpin();renderState(nextState);return;}
+async function stopFullReels(nextState,{forceAnimation=false}={}){
+  if(engine.debug.instant && !forceAnimation){clearFullReelSpin();renderState(nextState);return;}
   const jobs=[...reelSpinSessions.values()].map(s=>s.finished);
   if(jobs.length)await Promise.all(jobs);
   clearFullReelSpin();
@@ -3009,8 +3023,9 @@ async function playEvents(events,result){
       clearPaywinShow();
       renderState(ev.state);
       const nextStop=events.slice(eventIndex+1).find(x=>x.type==='REELS_STOP');
-      if(nextStop)startFullReelSpin(nextStop.state);
-    }else if(ev.type==='REELS_STOP') await stopFullReels(ev.state);
+      const forceReelAnimation=Boolean(ev.payload?.forceReelAnimation||nextStop?.payload?.forceReelAnimation);
+      if(nextStop)startFullReelSpin(nextStop.state,{forceAnimation:forceReelAnimation});
+    }else if(ev.type==='REELS_STOP') await stopFullReels(ev.state,{forceAnimation:Boolean(ev.payload?.forceReelAnimation)});
     else if(!['NUDGEX_DROP_START','NUDGEX_DROP_STEP','NUDGEX_RESOLVE'].includes(ev.type)) renderState(ev.state);
     animateRevolverEvent(ev);
     animateBulletTarget(ev);
@@ -3139,7 +3154,7 @@ function renderMathInspector(result){
   const target=forced?Number(result.targetWinX):null;const evaluated=Number(result.evaluatedWinX??(result.finalWinBP||0)/100??0);const val=result.validation||result.state?.validationStatus||'RNG';
   const targetText=forced?`${target.toFixed(2)}x`:'RNG RESULT';
   const targetAmount=forced?money(target*engine.bet):'—';
-  if(refs.mathStatus)refs.mathStatus.innerHTML=`<span>Bet</span><b>${money(engine.bet)}</b><span>Target Win X</span><b>${targetText}</b><span>Target Win Amount</span><b>${targetAmount}</b><span>Evaluated Win X</span><b>${evaluated.toFixed(2)}x</b><span>Evaluated Win Amount</span><b>${money(result.totalWin||0)}</b><span>Math Profile</span><b>${escapeHtml(result.mathProfile||result.state?.mathProfileId||NORMAL_GAME_MATH_PROFILE.id)}</b><span>Theoretical RTP Profile</span><b>${Number(result.theoreticalRtp||DEFAULT_RTP).toFixed(1)}%</b><span>Winning Paylines</span><b>${(result.wins||[]).length}</b><span>Respins</span><b>${Number(result.respins||0)}</b><span>Total Win</span><b>${money(result.totalWin||0)}</b><span>Validation</span><b class="${val==='PASS'||val==='RNG'?'validation-pass':'validation-fail'}">${val}</b>`;
+  if(refs.mathStatus)refs.mathStatus.innerHTML=`<span>Bet</span><b>${money(engine.bet)}</b><span>Target Win X</span><b>${targetText}</b><span>Target Win Amount</span><b>${targetAmount}</b><span>Evaluated Win X</span><b>${evaluated.toFixed(2)}x</b><span>Evaluated Win Amount</span><b>${money(result.totalWin||0)}</b><span>Math Profile</span><b>${escapeHtml(result.mathProfile||result.state?.mathProfileId||NORMAL_GAME_MATH_PROFILE.id)}</b><span>Theoretical RTP Profile</span><b>${Number(result.theoreticalRtp||DEFAULT_RTP).toFixed(1)}%</b><span>Winning Paylines</span><b>${(result.wins||[]).length}</b><span>Respins</span><b>${Number(result.respins||0)}</b><span>Total Win</span><b>${money(result.totalWin||0)}</b><span>Pipeline</span><b>${result.forcedOutcome?'FORCED EXACT SPIN':'RNG GAME CYCLE'}</b><span>Build</span><b>v32.10</b><span>Validation</span><b class="${val==='PASS'||val==='RNG'?'validation-pass':'validation-fail'}">${val}</b>`;
   if(refs.paylineInspector){
     const wins=result.wins||[];
     const r=result.resolution||{};

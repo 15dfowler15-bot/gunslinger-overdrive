@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
-<!-- Gunslinger Overdrive v32.10: exact forced outcomes through reel-spin playback pipeline -->
+<!-- Gunslinger Overdrive v32.11: natural forced outcome scenario generator -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Gunslinger Overdrive — Play Money Demo</title>
@@ -124,7 +124,7 @@ button,input,select{font:inherit}.cabinet-shell{width:min(1180px,96vw);margin:0 
 
   <aside id="debugPanel" class="debug-panel" aria-hidden="true">
     <div class="debug-head">
-      <div><small>DEVELOPER CONSOLE · BUILD v32.10</small><h2>MACHINE ROOM</h2></div>
+      <div><small>DEVELOPER CONSOLE · BUILD v32.11</small><h2>MACHINE ROOM</h2></div>
       <button id="debugClose">×</button>
     </div>
 
@@ -1926,11 +1926,46 @@ class SlotEngine {
     while(remain>0){
       const valid=values.filter(v=>v<=remain && min[remain-v]===min[remain]-1);
       if(!valid.length) return null;
-      // Prefer larger single-line pays but randomize among equally minimal decompositions.
       const top=valid.slice(0,Math.min(valid.length,6));
       const v=this.rng.pick(top);parts.push(v);remain-=v;
     }
     return parts;
+  }
+
+  paylineDecompositionTable(targetBP,maxLines=12) {
+    const target=Math.max(0,Math.round(Number(targetBP)||0));
+    const lineCap=Math.max(1,Math.min(PAYLINES.length,Math.floor(Number(maxLines)||12)));
+    const key=`${target}:${lineCap}`;
+    this._forceDecompCache ||= new Map();
+    if(this._forceDecompCache.has(key)) return this._forceDecompCache.get(key);
+    const values=[...new Set(REGULAR_SYMBOLS.flatMap(s=>[3,4,5].map(n=>Number(PAYTABLE_BP[s]?.[n]||0))).filter(Boolean))].sort((a,b)=>b-a);
+    const reachable=Array.from({length:lineCap+1},()=>new Uint8Array(target+1));
+    reachable[0][0]=1;
+    for(let k=1;k<=lineCap;k++){
+      const prev=reachable[k-1],cur=reachable[k];
+      for(let sum=0;sum<=target;sum++){
+        if(!prev[sum]) continue;
+        for(const v of values){const next=sum+v;if(next<=target)cur[next]=1;}
+      }
+    }
+    const counts=[];for(let k=1;k<=lineCap;k++)if(reachable[k][target])counts.push(k);
+    const table={target,lineCap,values,reachable,counts};this._forceDecompCache.set(key,table);return table;
+  }
+
+  randomPaylineDecomposition(targetBP,maxLines=12) {
+    const target=Math.max(0,Math.round(Number(targetBP)||0));
+    if(target===0)return [];
+    const table=this.paylineDecompositionTable(target,maxLines);
+    if(!table.counts.length)return null;
+    const choices=table.counts.slice(0,Math.min(table.counts.length,7));
+    const k=this.rng.pick(choices);
+    let remain=target,left=k;const parts=[];
+    while(left>0){
+      const valid=table.values.filter(v=>v<=remain && table.reachable[left-1][remain-v]);
+      if(!valid.length)return null;
+      const v=this.rng.pick(valid);parts.push(v);remain-=v;left--;
+    }
+    return remain===0?parts:null;
   }
 
   shuffleWithRng(items) {
@@ -1950,7 +1985,7 @@ class SlotEngine {
       return {baseTargetBP:0,finalTargetBP:0,multiplier:1,linePlans:[],wins:[],attempts:loss.attempts,signature:loss.signature};
     }
     for(let attempt=0;attempt<maxAttempts;attempt++){
-      const parts=this.minPaylineDecomposition(baseTarget,maxLines);
+      const parts=this.randomPaylineDecomposition(baseTarget,maxLines);
       if(!parts) return null;
       const assignments=new Map();
       const blockers=new Map();
@@ -2012,20 +2047,31 @@ class SlotEngine {
     return null;
   }
 
-  grayShotsForStoredValue(stored) {
-    let remain=Math.max(0,Math.round(Number(stored)||0));const values=[100,50,25,20,15,10,5,1];const out=[];
-    for(const v of values) while(remain>=v){out.push(v);remain-=v;if(out.length>20)break;}
-    return remain===0?out:null;
+  grayShotsForStoredValue(stored,{maxShots=5}={}) {
+    const target=Math.max(0,Math.round(Number(stored)||0));
+    if(target===0)return [];
+    const legal=[100,10,3,2];
+    const memo=new Map();
+    const solve=(remain,left)=>{
+      if(remain===0)return [];
+      if(remain<0||left<=0)return null;
+      const key=`${remain}:${left}`;if(memo.has(key))return memo.get(key);
+      const options=this.shuffleWithRng(legal.filter(v=>v<=remain));
+      for(const v of options){const tail=solve(remain-v,left-1);if(tail){const out=[v,...tail];memo.set(key,out);return out;}}
+      memo.set(key,null);return null;
+    };
+    return solve(target,Math.max(1,Math.floor(Number(maxShots)||5)));
   }
 
   legalNudgeCandidates(targetBP) {
     const target=Math.max(0,Math.round(Number(targetBP)||0));const out=[];
     for(let m=5;m<=104;m++){
       if(target%m!==0) continue;
-      const shots=this.grayShotsForStoredValue(m-4);if(!shots)continue;
-      out.push({multiplier:m,grayValues:shots,cost:3+shots.length});
+      const shots=m===5?[]:this.grayShotsForStoredValue(m-4,{maxShots:5});
+      if(shots==null)continue;
+      out.push({multiplier:m,grayValues:shots,cost:2+shots.length,totalBullets:shots.length+1});
     }
-    return out.sort((a,b)=>a.cost-b.cost||a.multiplier-b.multiplier);
+    return out;
   }
 
   installConfiguredRevolvers(configs=[],events=null,recordEvents=true) {
@@ -2095,29 +2141,39 @@ class SlotEngine {
     const target=Math.max(0,Math.round(Number(targetBP)||0));
     const shooterConfig=Array.isArray(cfg.shooterConfig)?cfg.shooterConfig.filter(Boolean).slice(0,6):[];
     if(shooterConfig.length) return this.resolveWithConfiguredShooters(target,cfg);
-    const reservedIds=[];
     const forceWild=Boolean(cfg.forceExpandedWild);
     const explicitMultiplier=cfg.forceNudgeX||cfg.forceMultiplier ? Math.max(1,Math.floor(Number(cfg.forcedMultiplier)||5)) : null;
-    const candidates=[];
+    let candidates=[];
     if(explicitMultiplier!=null){
-      if(explicitMultiplier<5) return {exact:false,impossible:true,targetBP:target,resolvedBP:0,method:'Forced feature constraints',message:`IMPOSSIBLE: forced xNudge multiplier ${explicitMultiplier}x is not a legal NudgeX final value.`};
-      const grayValues=this.grayShotsForStoredValue(explicitMultiplier-4);
-      if(!grayValues)return {exact:false,impossible:true,targetBP:target,resolvedBP:0,method:'Forced feature constraints',message:`IMPOSSIBLE: ${explicitMultiplier}x cannot be produced by legal Nudge + NudgeX values.`};
-      candidates.push({multiplier:explicitMultiplier,grayValues,cost:0,forced:true});
+      if(explicitMultiplier<5)return {exact:false,impossible:true,targetBP:target,resolvedBP:0,method:'Natural forced scenario',message:`IMPOSSIBLE: forced xNudge multiplier ${explicitMultiplier}x is below the legal 5x completed drop.`};
+      const grayValues=explicitMultiplier===5?[]:this.grayShotsForStoredValue(explicitMultiplier-4,{maxShots:5});
+      if(grayValues==null)return {exact:false,impossible:true,targetBP:target,resolvedBP:0,method:'Natural forced scenario',message:`IMPOSSIBLE: ${explicitMultiplier}x cannot be produced by one visible six-chamber revolver using legal +2/+3/+10/+100 Gray shots plus NudgeX.`};
+      candidates=[{multiplier:explicitMultiplier,grayValues,totalBullets:grayValues.length+1,forced:true}];
     }else{
-      candidates.push({multiplier:1,grayValues:[],cost:0});
-      candidates.push(...this.legalNudgeCandidates(target));
+      candidates=[{multiplier:1,grayValues:[],totalBullets:0},...this.legalNudgeCandidates(target)];
+      candidates=this.shuffleWithRng(candidates);
     }
     for(const feat of candidates){
       if(target===0 && feat.multiplier!==1)continue;
       if(target%feat.multiplier!==0)continue;
       const baseTarget=target/feat.multiplier;
-      const board=this.tryConstructExactBoard(baseTarget,{multiplier:feat.multiplier,reservedIds,forceWild,maxAttempts:feat.multiplier===1?950:550,maxLines:7});
+      const needsFeature=feat.multiplier>1;
+      let board=null,actorCells=[];
+      if(needsFeature){
+        const ids=[];for(let r=0;r<this.state.grid.length;r++)if(r!==1)for(let i=0;i<this.state.grid[r].length;i++)ids.push(`${r}:${i}`);
+        const pairs=[];for(let a=0;a<ids.length;a++)for(let b=a+1;b<ids.length;b++)pairs.push([ids[a],ids[b]]);
+        for(const pair of this.shuffleWithRng(pairs).slice(0,28)){
+          const candidate=this.tryConstructExactBoard(baseTarget,{multiplier:feat.multiplier,reservedIds:pair,forceWild,maxAttempts:220,maxLines:14});
+          if(candidate){board=candidate;actorCells=pair;break;}
+        }
+      }else board=this.tryConstructExactBoard(baseTarget,{multiplier:1,reservedIds:[],forceWild,maxAttempts:1200,maxLines:14});
       if(!board)continue;
-      const method=feat.multiplier===1?(forceWild?'Normal paylines + Wild substitution':'Normal paylines'):'Paylines + xNudge';
-      return {exact:true,targetBP:target,resolvedBP:target,loss:target===0,method,choice:null,boardPlan:board,featureMultiplier:feat.multiplier,grayValues:deepClone(feat.grayValues||[]),nudgeRequired:feat.multiplier>1,multiplierRequired:feat.multiplier>1,shooterRequired:feat.multiplier>1,forceWild,message:`Exact ${(target/100).toFixed(2)}x constructed · ${method}`};
+      const method=needsFeature?'Natural paylines + visible Sheriff/xNudge':'Natural paylines';
+      const scenarioType=needsFeature?'VISIBLE_SHERIFF_XNUDGE':'VISIBLE_PAYLINES';
+      const winSummary=board.wins.map(w=>`${w.symbol}:${w.count}:${w.basePayBP}:${w.finalPayBP}`).join('|');
+      return {exact:true,targetBP:target,resolvedBP:target,loss:target===0,method,choice:null,boardPlan:board,featureMultiplier:feat.multiplier,grayValues:deepClone(feat.grayValues||[]),nudgeRequired:needsFeature,multiplierRequired:needsFeature,shooterRequired:needsFeature,forceWild,actorCells,scenarioType,scenarioSignature:`${scenarioType}:${feat.multiplier}:${actorCells.join(',')}:${board.signature}:${winSummary}`,message:`Exact ${(target/100).toFixed(2)}x generated as a visible legal scenario · ${method}`};
     }
-    return {exact:false,impossible:true,targetBP:target,resolvedBP:0,loss:true,method:'Constraint resolver',nudgeRequired:false,multiplierRequired:false,shooterRequired:false,message:`IMPOSSIBLE: no legal exact ${(target/100).toFixed(2)}x board found under the current constraints.`};
+    return {exact:false,impossible:true,targetBP:target,resolvedBP:0,loss:true,method:'Natural forced scenario generator',nudgeRequired:false,multiplierRequired:false,shooterRequired:false,message:`IMPOSSIBLE: no visible legal scenario produced exact ${(target/100).toFixed(2)}x under the current constraints.`};
   }
 
   selectTargetWinBP(config=null) {
@@ -2154,12 +2210,54 @@ class SlotEngine {
     return rev;
   }
 
-  fireOutcomeDirectorShot(rev, events, recordEvents=true, rapidFire=false) {
+  fireOutcomeDirectorShot(rev, events, recordEvents=true, rapidFire=false, context={}) {
     if (!rev) return null;const idx=this.nextLoadedIndex(rev);if (idx<0) return null;const bullet=rev.chambers[idx];rev.currentIndex=idx;
-    this.emit(events,'REVOLVER_AIM',`${rev.id} rotates to chamber ${idx+1}`,{revolverId:rev.id,chamber:idx,bullet,outcomeDirector:true,rapidFire},recordEvents);
+    const payload={revolverId:rev.id,chamber:idx,bullet,outcomeDirector:true,rapidFire,...(context||{})};
+    this.emit(events,'REVOLVER_AIM',`${rev.id} rotates to chamber ${idx+1}`,payload,recordEvents);
     rev.chambers[idx]=null;rev.currentIndex=(idx+1)%6;
-    this.emit(events,'REVOLVER_FIRE',`${rev.id}: ${BULLET_LABELS[bullet]||bullet}`,{revolverId:rev.id,chamber:idx,bullet,outcomeDirector:true,rapidFire},recordEvents);
+    this.emit(events,'REVOLVER_FIRE',`${rev.id}: ${BULLET_LABELS[bullet]||bullet}`,payload,recordEvents);
     return bullet;
+  }
+
+  installNaturalForcedActors(resolution) {
+    if(!resolution?.nudgeRequired)return null;
+    const [revId,sheriffId]=Array.isArray(resolution.actorCells)?resolution.actorCells:['4:0','4:2'];
+    const byId=id=>{const [r,i]=String(id).split(':').map(Number);return this.state.grid?.[r]?.[i]||null;};
+    const revCell=byId(revId),sheriffCell=byId(sheriffId);if(!revCell||!sheriffCell)return null;
+    const bullets=[...(resolution.grayValues||[]).map(()=> 'GRAY'),'GOLD'];
+    if(bullets.length>6)return null;
+    const chambers=Array(6).fill(null);bullets.forEach((b,i)=>chambers[i]=b);
+    const rev={id:`REV-${++this.revolverCounter}`,reel:revCell.reel,index:revCell.index,chambers,currentIndex:0,createdOrder:this.revolverCounter,landedThisCycle:true};
+    Object.assign(revCell,{symbol:'REVOLVER',revolver:rev,locked:true,lockReason:'REVOLVER',isWild:false,splitLevel:0,landedThisCycle:true});
+    Object.assign(sheriffCell,{symbol:'SHERIFF',revolver:null,locked:false,lockReason:null,isWild:false,splitLevel:0,landedThisCycle:true});
+    resolution.directorRevolverId=rev.id;resolution.sheriffCellId=sheriffCell.id;
+    return {rev,sheriffCell};
+  }
+
+  playNaturalForcedXNudge(resolution,events,recordEvents=true) {
+    const rev=this.allRevolvers().find(r=>r.id===resolution?.directorRevolverId);
+    const sheriffCell=this.state.grid.flat().find(c=>c.id===resolution?.sheriffCellId&&c.symbol==='SHERIFF');
+    if(!rev||!sheriffCell)return false;
+    const ctx={sheriff:true,sheriffCellId:sheriffCell.id,cellId:sheriffCell.id,cellIds:[sheriffCell.id],forcedOutcome:true,naturalForcedScenario:true};
+    this.emit(events,'SHERIFF_TRIGGER','SHERIFF unleashes the visible forced-scenario revolver',ctx,recordEvents);
+    let stored=0;const reel=1;const grayValues=Array.isArray(resolution.grayValues)?resolution.grayValues:[];
+    for(const val of grayValues){
+      this.fireOutcomeDirectorShot(rev,events,recordEvents,true,ctx);
+      this.state.xNudgeIncrementCounts[val]=Number(this.state.xNudgeIncrementCounts?.[val]||0)+1;
+      this.emit(events,'BULLET_TARGET',`XNUDGE +${val} targets holder ${reel+1}`,{bullet:'GRAY',reel,value:val,...ctx},recordEvents);
+      const before=stored;stored+=val;this.state.nudgeMeters[reel]=stored;
+      this.emit(events,'GRAY_HIT',`XNUDGE +${val}x stored above reel ${reel+1} (${stored}x)`,{reel,value:val,before,total:stored,targetType:'HOLDER',...ctx},recordEvents);
+    }
+    this.fireOutcomeDirectorShot(rev,events,recordEvents,true,ctx);
+    this.state.nudgeXShotsUsed=Number(this.state.nudgeXShotsUsed||0)+1;
+    const base=stored>0?stored:1;
+    const xn=this.makeXNudgeState(reel,base,{armed:true,activated:false,history:[{type:'BASE',source:stored>0?'STORED_HOLDER':'DEFAULT',value:base,to:base}],splitCount:0,coveredRows:[]});xn.stored=stored;xn.finalEstimate=base+(REEL_HEIGHTS[reel]||4);
+    this.state.pendingNudgeX[reel]=xn;this.state.nudgeXColumns[reel]=stored;
+    this.emit(events,'BULLET_TARGET',`NUDGEX targets reel ${reel+1}`,{bullet:'GOLD',reel,xNudgeWildId:xn.id,...ctx},recordEvents);
+    this.emit(events,'GOLD_HIT',stored>0?`NUDGEX armed above reel ${reel+1} · ${stored}x stored`:`NUDGEX armed above reel ${reel+1}`,{reel,stored,base,final:xn.finalEstimate,xNudgeWildId:xn.id,...ctx},recordEvents);
+    this.finalizePendingNudgeX(events,recordEvents);
+    this.emit(events,'SHERIFF_END','SHERIFF forced-scenario barrage finished',{shots:grayValues.length+1,...ctx},recordEvents);
+    return this.getEffectiveXNudgeMultiplier(reel)===Number(resolution.featureMultiplier||1);
   }
 
   presentResolvedNudgeX(resolution,events,recordEvents=true) {
@@ -2207,7 +2305,10 @@ class SlotEngine {
     }else resolution=this.resolveTargetOutcome(targetBP,{config});
     this.state.targetWinBP=targetBP;this.state.outcomePlan=deepClone(resolution);
     // Feature multipliers are used during resolver validation, but they must not be visibly active before their presentation sequence earns them.
-    if(resolution.nudgeRequired){this.state.resolvedNudgeX={};this.state.nudgeXColumns={};this.state.nudgeMeters={1:0,2:0,3:0};this.state.pendingNudgeX={};}
+    if(resolution.nudgeRequired){
+      this.state.resolvedNudgeX={};this.state.nudgeXColumns={};this.state.nudgeMeters={1:0,2:0,3:0};this.state.pendingNudgeX={};
+      this.installNaturalForcedActors(resolution);
+    }
     if(recordEvents){
       const preState={...deepClone(beforeSpin),balance:this.balance,bet:this.bet,seed:this.seed,volatility:this.debug.volatility,scenario:this.scenario};
       // Forced outcomes still enter the same presentation contract as a real paid spin:
@@ -2241,7 +2342,7 @@ class SlotEngine {
       }else this.fireStandardVolley(events,recordEvents);
       if(Object.keys(this.state.pendingNudgeX||{}).length)this.finalizePendingNudgeX(events,recordEvents);
     }else if(resolution.nudgeRequired){
-      this.presentResolvedNudgeX(resolution,events,recordEvents);
+      this.playNaturalForcedXNudge(resolution,events,recordEvents);
     }
 
     let wins=this.evaluateWins();if(wins.length)this.syncWins(wins);
@@ -2258,7 +2359,7 @@ class SlotEngine {
     const credited=this.state.validationStatus==='PASS'?totalWin:0;
     resolution.paylineSummary=wins.map(w=>({lineIndex:w.lineIndex,symbol:w.symbol,count:w.count,basePayBP:w.basePayBP,finalPayBP:w.finalPayBP,featureMultiplier:w.featureMultiplier,amount:w.amount}));
     resolution.message=`${resolution.message} · ${wins.length} winning payline${wins.length===1?'':'s'} · Shooter Required: ${resolution.shooterRequired?'YES':'NO'} · xNudge Required: ${resolution.nudgeRequired?'YES':'NO'} · Multiplier Required: ${resolution.multiplierRequired?'YES':'NO'}`;
-    const result={sequenceId,totalWin:credited,finalWinBP:evaluatedBP,respins:0,wins:deepClone(wins),state:this.snapshot(),seed:this.seed,volatility:this.debug.volatility,targetWinX:targetBP/100,resolvedWinX:resolution.resolvedBP/100,evaluatedWinX:evaluatedBP/100,validation:this.state.validationStatus,forcedOutcome:true,spinPipeline:'FORCED_EXACT_SPIN',resolution:deepClone(resolution)};
+    const result={sequenceId,totalWin:credited,finalWinBP:evaluatedBP,respins:0,wins:deepClone(wins),state:this.snapshot(),seed:this.seed,volatility:this.debug.volatility,targetWinX:targetBP/100,resolvedWinX:resolution.resolvedBP/100,evaluatedWinX:evaluatedBP/100,validation:this.state.validationStatus,forcedOutcome:true,spinPipeline:'FORCED_EXACT_SPIN',scenarioType:resolution.scenarioType||null,scenarioSignature:resolution.scenarioSignature||null,resolution:deepClone(resolution)};
     this.history.unshift(result);this.history=this.history.slice(0,100);return {events,result};
   }
 
@@ -3154,7 +3255,7 @@ function renderMathInspector(result){
   const target=forced?Number(result.targetWinX):null;const evaluated=Number(result.evaluatedWinX??(result.finalWinBP||0)/100??0);const val=result.validation||result.state?.validationStatus||'RNG';
   const targetText=forced?`${target.toFixed(2)}x`:'RNG RESULT';
   const targetAmount=forced?money(target*engine.bet):'—';
-  if(refs.mathStatus)refs.mathStatus.innerHTML=`<span>Bet</span><b>${money(engine.bet)}</b><span>Target Win X</span><b>${targetText}</b><span>Target Win Amount</span><b>${targetAmount}</b><span>Evaluated Win X</span><b>${evaluated.toFixed(2)}x</b><span>Evaluated Win Amount</span><b>${money(result.totalWin||0)}</b><span>Math Profile</span><b>${escapeHtml(result.mathProfile||result.state?.mathProfileId||NORMAL_GAME_MATH_PROFILE.id)}</b><span>Theoretical RTP Profile</span><b>${Number(result.theoreticalRtp||DEFAULT_RTP).toFixed(1)}%</b><span>Winning Paylines</span><b>${(result.wins||[]).length}</b><span>Respins</span><b>${Number(result.respins||0)}</b><span>Total Win</span><b>${money(result.totalWin||0)}</b><span>Pipeline</span><b>${result.forcedOutcome?'FORCED EXACT SPIN':'RNG GAME CYCLE'}</b><span>Build</span><b>v32.10</b><span>Validation</span><b class="${val==='PASS'||val==='RNG'?'validation-pass':'validation-fail'}">${val}</b>`;
+  if(refs.mathStatus)refs.mathStatus.innerHTML=`<span>Bet</span><b>${money(engine.bet)}</b><span>Target Win X</span><b>${targetText}</b><span>Target Win Amount</span><b>${targetAmount}</b><span>Evaluated Win X</span><b>${evaluated.toFixed(2)}x</b><span>Evaluated Win Amount</span><b>${money(result.totalWin||0)}</b><span>Math Profile</span><b>${escapeHtml(result.mathProfile||result.state?.mathProfileId||NORMAL_GAME_MATH_PROFILE.id)}</b><span>Theoretical RTP Profile</span><b>${Number(result.theoreticalRtp||DEFAULT_RTP).toFixed(1)}%</b><span>Winning Paylines</span><b>${(result.wins||[]).length}</b><span>Respins</span><b>${Number(result.respins||0)}</b><span>Total Win</span><b>${money(result.totalWin||0)}</b><span>Pipeline</span><b>${result.forcedOutcome?'FORCED NATURAL SCENARIO':'RNG GAME CYCLE'}</b><span>Scenario</span><b>${escapeHtml(result.scenarioType||result.resolution?.scenarioType||'—')}</b><span>Build</span><b>v32.11</b><span>Validation</span><b class="${val==='PASS'||val==='RNG'?'validation-pass':'validation-fail'}">${val}</b>`;
   if(refs.paylineInspector){
     const wins=result.wins||[];
     const r=result.resolution||{};

@@ -332,7 +332,7 @@ const MAX_NUDGEX_BULLETS_PER_ROUND = 3;
 // RNG selects virtual-reel stops, the rule engine processes respins/features,
 // and RTP/volatility emerge from those fixed probabilities over complete rounds.
 const NORMAL_GAME_MATH_PROFILE = {
-  id:'NORMAL_FIXED_CYCLE_V5_MATCHING_SYMBOL_RESPINS',
+  id:'NORMAL_FIXED_CYCLE_V4_XNUDGE_ARITHMETIC',
   targetTheoreticalRtp:DEFAULT_RTP,
   maxNudgeXBulletsPerRound:MAX_NUDGEX_BULLETS_PER_ROUND,
   reelCounts:{
@@ -1471,22 +1471,6 @@ class SlotEngine {
     return {newLines,extensions,progression:Boolean(newLines.length||extensions.length)};
   }
 
-
-  matchingHeldSymbolProgression(changedIds=[], priorHeld=[]) {
-    // Newly rolled exact matches to symbol types already held from winning paylines
-    // count as respin progression even when they do not change the current payout.
-    // Wilds and special symbols never count as these extra matches.
-    const held=new Set((priorHeld||[]).filter(symbol=>REGULAR_SYMBOLS.includes(symbol)));
-    const matching=[];
-    for(const id of changedIds||[]){
-      const [r,i]=String(id).split(':').map(Number);
-      const cell=this.state.grid?.[r]?.[i];
-      if(!cell || cell.revolver || cell.isWild || cell.symbol==='WILD') continue;
-      if(held.has(cell.symbol)) matching.push({cellId:cell.id,symbol:cell.symbol,reel:r,row:i});
-    }
-    return matching;
-  }
-
   debugNeedsActiveRound(config=null){
     if(!config)return false;
     return Boolean((config.shooterConfig?.length)||config.forceNudgeX||config.forceExpandedWild||config.forceShooterSequence||config.forceAmmoReload||config.forceSheriffSequence||config.forceMultiplier);
@@ -1572,7 +1556,7 @@ class SlotEngine {
     if(deductBet)this.balance=Math.max(0,this.balance-this.bet);
     this.resetState();this.state.active=true;this.state.mathProfileId=profile.id;
     const roundStages=[];const runtime={debugFeatureOverridesApplied:false,forcedAmmoUsed:false,forcedSheriffUsed:false};
-    const progressionStats={newLines:0,extensions:0,matchingSymbolContinuations:0,revolverContinuations:0};
+    const progressionStats={newLines:0,extensions:0,revolverContinuations:0};
     const featureStats={revolverLanded:0,nudgeX:false,multiplier:false,sheriff:false,ammo:false};
     this.emit(events,'SEQUENCE_START',`RNG game cycle ${sequenceId}`,{sequenceId,mathProfile:profile.id,theoreticalRtp:profile.targetTheoreticalRtp},recordEvents);
 
@@ -1658,19 +1642,13 @@ class SlotEngine {
       respins++;
       this.state.respinIndex=respins;
       this.emit(events,'RESPIN_START',`RESPIN ${respins}`,{cycle:respins},recordEvents);
-      const priorHeld=[...this.state.heldWinTypes];
       const changed=this.rollVirtualUnlocked({initial:false,cycle:respins,profile});
       this.emit(events,'REELS_STOP',`Respin ${respins} RNG reel stops`,{changed,reelStops:deepClone(this.state.reelStops)},recordEvents);
       const beforeFeatureWins=this.evaluateWins();
       const stageProgress=this.comparePaylineProgression(previousWins,beforeFeatureWins);
-      const matchingHeld=this.matchingHeldSymbolProgression(changed,priorHeld);
       const newRevolvers=this.state.grid.flat().filter(c=>c.landedThisCycle&&c.revolver).map(c=>c.revolver.id);
       if(stageProgress.newLines.length){progressionStats.newLines+=stageProgress.newLines.length;this.emit(events,'WIN_CREATED',`${stageProgress.newLines.length} new payline${stageProgress.newLines.length===1?'':'s'}`,{wins:deepClone(stageProgress.newLines),kind:'NEW_PAYLINE'},recordEvents);}
       if(stageProgress.extensions.length){progressionStats.extensions+=stageProgress.extensions.length;this.emit(events,'PAYLINE_EXTENDED',`${stageProgress.extensions.length} payline extension${stageProgress.extensions.length===1?'':'s'}`,{extensions:deepClone(stageProgress.extensions)},recordEvents);}
-      if(matchingHeld.length){
-        progressionStats.matchingSymbolContinuations+=matchingHeld.length;
-        this.emit(events,'MATCHING_SYMBOL',`${matchingHeld.length} matching held symbol${matchingHeld.length===1?'':'s'} landed — respin earned`,{matches:deepClone(matchingHeld),cells:matchingHeld.map(x=>x.cellId),symbols:[...new Set(matchingHeld.map(x=>x.symbol))]},recordEvents);
-      }
       if(newRevolvers.length){progressionStats.revolverContinuations+=newRevolvers.length;featureStats.revolverLanded+=newRevolvers.length;this.emit(events,'REVOLVER_LANDED',`${newRevolvers.length} new revolver${newRevolvers.length===1?'':'s'} landed during active respins`,{ids:newRevolvers},recordEvents);}
       if(beforeFeatureWins.length)this.syncWins(beforeFeatureWins);
 
@@ -1681,11 +1659,10 @@ class SlotEngine {
       if(featureProgress.newLines.length){progressionStats.newLines+=featureProgress.newLines.length;this.emit(events,'LATE_WIN',`${featureProgress.newLines.length} new payline${featureProgress.newLines.length===1?'':'s'} created by features`,{wins:deepClone(featureProgress.newLines)},recordEvents);}
       if(featureProgress.extensions.length){progressionStats.extensions+=featureProgress.extensions.length;this.emit(events,'PAYLINE_EXTENDED',`${featureProgress.extensions.length} payline extension${featureProgress.extensions.length===1?'':'s'} created by features`,{extensions:deepClone(featureProgress.extensions),featureCreated:true},recordEvents);}
 
-      const continues=Boolean(stageProgress.progression||matchingHeld.length||newRevolvers.length||featureProgress.progression);
+      const continues=Boolean(stageProgress.progression||newRevolvers.length||featureProgress.progression);
       let reason=null;
       if(stageProgress.newLines.length||featureProgress.newLines.length)reason='NEW_PAYLINE';
       else if(stageProgress.extensions.length||featureProgress.extensions.length)reason='PAYLINE_EXTENSION';
-      else if(matchingHeld.length)reason='MATCHING_HELD_SYMBOL';
       else if(newRevolvers.length)reason='NEW_REVOLVER_CHAMBER';
       roundStages.push({type:'RESPIN',board:deepClone(this.state.grid),wins:deepClone(postFeatureWins),progression:reason,cycle:respins});
       previousWins=deepClone(postFeatureWins);
@@ -2301,14 +2278,14 @@ class SlotEngine {
     const n=Math.max(1,Math.min(1000000,Math.floor(Number(count)||1000)));
     const simCfg=this.debug.useDefaultRtp?null:{useDefaultRtp:false,customRtp:this.debug.customRtp,targetWinBP:null};
     const shadow=new SlotEngine({seed:`${this.seed}:SIM`,bet:this.bet,balance:0,debug:{...this.debug,instant:true,stepMode:false}});shadow.scenario='random';
-    const wins=[],respins=[],xnMultipliers=[],combinedXNudges=[];let totalReturned=0,dead=0,initialHits=0,enteredRespins=0,newLineRounds=0,extensionRounds=0,matchingRounds=0,revolverRounds=0,nudgeRounds=0,nudgeActivated=0,multiplierRounds=0,featureRounds=0,splitRounds=0,splitWildRounds=0,multiXNudgeRounds=0,xnPayoutTotal=0,xnPayoutRounds=0,splitPayoutTotal=0,splitPayoutRounds=0;const addCounts={2:0,3:0,10:0,100:0};
+    const wins=[],respins=[],xnMultipliers=[],combinedXNudges=[];let totalReturned=0,dead=0,initialHits=0,enteredRespins=0,newLineRounds=0,extensionRounds=0,revolverRounds=0,nudgeRounds=0,nudgeActivated=0,multiplierRounds=0,featureRounds=0,splitRounds=0,splitWildRounds=0,multiXNudgeRounds=0,xnPayoutTotal=0,xnPayoutRounds=0,splitPayoutTotal=0,splitPayoutRounds=0;const addCounts={2:0,3:0,10:0,100:0};
     const dist=new Map();let maxWin=0;
     for(let i=0;i<n;i++){
       shadow.setSeed(`${this.seed}:SIM:${i}`);
       const out=shadow.rngGameCycleSequence({recordEvents:false,deductBet:false,configOverride:simCfg,recordHistory:false}).result;
       const w=Number(out.totalWin)||0;wins.push(w);respins.push(Number(out.respins)||0);totalReturned+=w;maxWin=Math.max(maxWin,w);
       if(out.deadRound)dead++;if(out.initialPaylineHit)initialHits++;if((out.respins||0)>0)enteredRespins++;
-      if((out.progressionStats?.newLines||0)>0)newLineRounds++;if((out.progressionStats?.extensions||0)>0)extensionRounds++;if((out.progressionStats?.matchingSymbolContinuations||0)>0)matchingRounds++;if((out.progressionStats?.revolverContinuations||0)>0)revolverRounds++;
+      if((out.progressionStats?.newLines||0)>0)newLineRounds++;if((out.progressionStats?.extensions||0)>0)extensionRounds++;if((out.progressionStats?.revolverContinuations||0)>0)revolverRounds++;
       const st=out.state||{};const xstates=Object.entries(st.resolvedNudgeX||{}).map(([r,x])=>shadow._normalizeXNudgeState(x,Number(r),true)).filter(Boolean);
       if(out.featureStats?.nudgeX||xstates.length)nudgeRounds++;if(xstates.length)nudgeActivated++;if(xstates.length>1)multiXNudgeRounds++;
       for(const xs of xstates)xnMultipliers.push(Math.max(1,Number(xs.multiplier)||1));
@@ -2320,7 +2297,7 @@ class SlotEngine {
       const x=this.bet>0?w/this.bet:0;const bucket=x===0?'0x':x<5?'0–5x':x<25?'5–25x':x<100?'25–100x':x<500?'100–500x':'500x+';dist.set(bucket,(dist.get(bucket)||0)+1);
     }
     const sortedWins=[...wins].sort((a,b)=>a-b),sortedRespins=[...respins].sort((a,b)=>a-b),sortedXN=[...xnMultipliers].sort((a,b)=>a-b);const paidRounds=n,totalWagered=n*this.bet,observedRtp=totalWagered>0?(totalReturned/totalWagered)*100:0;const positive=wins.filter(v=>v>0);const configured=this.debug.useDefaultRtp?NORMAL_GAME_MATH_PROFILE.targetTheoreticalRtp:clamp(Number(this.debug.customRtp)||DEFAULT_RTP,1,200);
-    return {configuredRtp:configured,observedRtp,spins:n,paidRounds,totalWagered,totalReturned,deadSpinRate:dead/n*100,initialPaylineHitRate:initialHits/n*100,roundsEnteringRespin:enteredRespins/n*100,averageRespins:respins.reduce((a,b)=>a+b,0)/n,medianRespins:sortedRespins[Math.floor((n-1)/2)]||0,longestRespinChain:Math.max(0,...respins),newLineContinuationFrequency:newLineRounds/n*100,lineExtensionFrequency:extensionRounds/n*100,matchingSymbolContinuationFrequency:matchingRounds/n*100,revolverContinuationFrequency:revolverRounds/n*100,nudgeXFrequency:nudgeRounds/n*100,nudgeXActivationFrequency:nudgeActivated/n*100,averageXNudgeMultiplier:xnMultipliers.length?xnMultipliers.reduce((a,b)=>a+b,0)/xnMultipliers.length:0,medianXNudgeMultiplier:sortedXN[Math.floor((sortedXN.length-1)/2)]||0,largestXNudgeMultiplier:Math.max(0,...xnMultipliers),xNudgeIncrementFrequencies:Object.fromEntries(Object.entries(addCounts).map(([k,v])=>[k,v/n*100])),xSplitFrequency:splitRounds/n*100,xSplitOnWildFrequency:splitWildRounds/n*100,multipleXNudgeWildFrequency:multiXNudgeRounds/n*100,averageCombinedXNudgeMultiplier:combinedXNudges.length?combinedXNudges.reduce((a,b)=>a+b,0)/combinedXNudges.length:0,largestCombinedXNudgeMultiplier:Math.max(0,...combinedXNudges),averagePayoutInvolvingXNudge:xnPayoutRounds?xnPayoutTotal/xnPayoutRounds:0,averagePayoutInvolvingXSplit:splitPayoutRounds?splitPayoutTotal/splitPayoutRounds:0,multiplierFrequency:multiplierRounds/n*100,featureFrequency:featureRounds/n*100,shooterFrequency:revolverRounds/n*100,hitRate:positive.length/n*100,lossRate:(n-positive.length)/n*100,averageWin:positive.length?positive.reduce((a,b)=>a+b,0)/positive.length:0,medianWin:sortedWins[Math.floor((n-1)/2)]||0,maxWin,distribution:Object.fromEntries(dist)};
+    return {configuredRtp:configured,observedRtp,spins:n,paidRounds,totalWagered,totalReturned,deadSpinRate:dead/n*100,initialPaylineHitRate:initialHits/n*100,roundsEnteringRespin:enteredRespins/n*100,averageRespins:respins.reduce((a,b)=>a+b,0)/n,medianRespins:sortedRespins[Math.floor((n-1)/2)]||0,longestRespinChain:Math.max(0,...respins),newLineContinuationFrequency:newLineRounds/n*100,lineExtensionFrequency:extensionRounds/n*100,revolverContinuationFrequency:revolverRounds/n*100,nudgeXFrequency:nudgeRounds/n*100,nudgeXActivationFrequency:nudgeActivated/n*100,averageXNudgeMultiplier:xnMultipliers.length?xnMultipliers.reduce((a,b)=>a+b,0)/xnMultipliers.length:0,medianXNudgeMultiplier:sortedXN[Math.floor((sortedXN.length-1)/2)]||0,largestXNudgeMultiplier:Math.max(0,...xnMultipliers),xNudgeIncrementFrequencies:Object.fromEntries(Object.entries(addCounts).map(([k,v])=>[k,v/n*100])),xSplitFrequency:splitRounds/n*100,xSplitOnWildFrequency:splitWildRounds/n*100,multipleXNudgeWildFrequency:multiXNudgeRounds/n*100,averageCombinedXNudgeMultiplier:combinedXNudges.length?combinedXNudges.reduce((a,b)=>a+b,0)/combinedXNudges.length:0,largestCombinedXNudgeMultiplier:Math.max(0,...combinedXNudges),averagePayoutInvolvingXNudge:xnPayoutRounds?xnPayoutTotal/xnPayoutRounds:0,averagePayoutInvolvingXSplit:splitPayoutRounds?splitPayoutTotal/splitPayoutRounds:0,multiplierFrequency:multiplierRounds/n*100,featureFrequency:featureRounds/n*100,shooterFrequency:revolverRounds/n*100,hitRate:positive.length/n*100,lossRate:(n-positive.length)/n*100,averageWin:positive.length?positive.reduce((a,b)=>a+b,0)/positive.length:0,medianWin:sortedWins[Math.floor((n-1)/2)]||0,maxWin,distribution:Object.fromEntries(dist)};
   }
 
 }
@@ -3244,7 +3221,6 @@ Median respins: ${s.medianRespins}
 Longest respin chain: ${s.longestRespinChain}
 New-line continuation: ${s.newLineContinuationFrequency.toFixed(2)}%
 Line-extension continuation: ${s.lineExtensionFrequency.toFixed(2)}%
-Matching-symbol continuation: ${s.matchingSymbolContinuationFrequency.toFixed(2)}%
 Revolver continuation: ${s.revolverContinuationFrequency.toFixed(2)}%
 xNudge Wild frequency: ${s.nudgeXFrequency.toFixed(2)}%
 xNudge activation frequency: ${s.nudgeXActivationFrequency.toFixed(2)}%

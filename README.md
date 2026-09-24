@@ -52,3 +52,11 @@ When a normal surviving Split multiplier and one or more participating resolved 
 - Presets 0x, 1x, 5x, 10x, 25x, 50x, 100x, 250x, 500x, and 1000x are regression-tested for exact PASS results.
 - Normal paid gameplay remains on the RNG game-cycle engine; this resolver is debug-only.
 - Persistent custom RTP from v32.8 remains unchanged for unforced normal spins.
+
+
+## v32.10 — forced outcomes use the reel-spin playback pipeline
+- Exact forced targets still use the debug-only exact constraint resolver for deterministic payout construction.
+- The resolver can no longer visually swap the board: forced rounds emit SPIN_START -> REELS_STOP -> feature/payout events and are played through the same reel animation layer as normal rounds.
+- Forced SPIN_START / REELS_STOP events carry forceReelAnimation so a forced outcome cannot silently snap even if Instant playback was left enabled.
+- Added a CSS-transition fallback when Web Animations API is unavailable.
+- The debug console and math inspector display BUILD v32.10 / FORCED EXACT SPIN so stale browser cache is immediately obvious.

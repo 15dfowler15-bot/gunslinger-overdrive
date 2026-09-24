@@ -44,3 +44,11 @@ When a normal surviving Split multiplier and one or more participating resolved 
 - Unchecking Use Default RTP and entering a value immediately changes the RNG profile for every subsequent normal paid spin until reset.
 - Simulation and live gameplay now read the same persistent RTP setting.
 - ARM NEXT SPIN no longer captures/freezes RTP; it remains reserved for one-shot forced/debug constraints.
+
+
+## v32.9 — reliable Force Outcome debug
+- Force Outcome no longer relies on a bounded 5,000-cycle natural RNG search for exact targets.
+- Armed Target Win X / Target Win Amount now routes through the exact debug constraint resolver.
+- Presets 0x, 1x, 5x, 10x, 25x, 50x, 100x, 250x, 500x, and 1000x are regression-tested for exact PASS results.
+- Normal paid gameplay remains on the RNG game-cycle engine; this resolver is debug-only.
+- Persistent custom RTP from v32.8 remains unchanged for unforced normal spins.

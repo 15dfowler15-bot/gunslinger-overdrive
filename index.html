@@ -143,7 +143,7 @@ button,input,select{font:inherit}.cabinet-shell{width:min(1180px,96vw);margin:0 
         <label class="toggle"><input id="useDefaultRtp" type="checkbox" checked> <span>Use Default RTP (96%)</span></label>
         <label>Target RTP %<input id="targetRtp" type="number" min="0" max="200" step="0.1" value="96"></label>
         <button id="resetRtp" class="dev-action">RESET RTP</button>
-        <p class="hint">Custom RTP affects simulation immediately and is captured into gameplay only when you ARM NEXT SPIN. It is not a cosmetic display override.</p>
+        <p class="hint">Custom RTP applies immediately to every subsequent normal spin and simulation until you change or reset it. ARM NEXT SPIN is not required for RTP.</p>
       </section>
 
       <section class="debug-card">
@@ -1425,8 +1425,11 @@ class SlotEngine {
 
 
   mathProfileForConfig(config=null) {
-    if(config && config.useDefaultRtp===false && Number.isFinite(Number(config.customRtp))){
-      const target=clamp(Number(config.customRtp),1,200);
+    // RTP is a persistent machine-math setting. One-shot debug configs may override
+    // it explicitly, but ordinary spins use the currently selected RTP immediately.
+    const useDefault=(config && typeof config.useDefaultRtp==='boolean')?config.useDefaultRtp:this.debug.useDefaultRtp;
+    if(useDefault===false){
+      const target=clamp(this.effectiveRtp(config),1,200);
       const scale=clamp(target/DEFAULT_RTP,.55,1.75);
       return {id:`DEBUG_RTP_${target.toFixed(2)}`,targetTheoreticalRtp:target,reelStrips:debugReelStripsForRtp(target),debugOnly:true,featureScale:scale};
     }
@@ -3082,9 +3085,9 @@ function debugOverrideActive(){
 }
 function updateDebugIndicator(){
   const pending=engine.peekPendingDebugSpin();
-  const rtpDraft=!engine.debug.useDefaultRtp;
-  refs.debugStateChip?.classList.toggle('active',Boolean(pending));
-  if(refs.debugStateChip)refs.debugStateChip.textContent=pending?'NEXT SPIN ARMED':(rtpDraft?'RTP DRAFT · ARM TO USE':'RNG CYCLE MATH');
+  const customRtpActive=!engine.debug.useDefaultRtp;
+  refs.debugStateChip?.classList.toggle('active',Boolean(pending||customRtpActive));
+  if(refs.debugStateChip)refs.debugStateChip.textContent=pending?'NEXT SPIN ARMED':(customRtpActive?`CUSTOM RTP ${Number(engine.debug.customRtp||DEFAULT_RTP).toFixed(1)}% ACTIVE`:'RNG CYCLE MATH');
   refs.debugModeBanner?.classList.toggle('show',Boolean(pending));
   if(refs.debugModeBanner)refs.debugModeBanner.textContent='NEXT SPIN ARMED · PRESS NORMAL SPIN';
 }
@@ -3102,8 +3105,8 @@ function captureDebugSpinConfig(){
     forceMultiplier:$('#forceMultiplier').checked,
     forcedMultiplier:clamp(Math.floor(Number($('#forcedMultiplier').value)||1),1,104),
     shooterConfig:useShooter?shooterEditorValues():[],
-    useDefaultRtp:$('#useDefaultRtp').checked,
-    customRtp:clamp(Number($('#targetRtp').value)||DEFAULT_RTP,0,200),
+    // RTP is intentionally NOT captured here. It is persistent machine math and
+    // remains live independently of one-shot ARM NEXT SPIN overrides.
     rngSeed:debugSeedArmed?$('#rngSeedInput').value.trim():null
   };
 }
@@ -3116,7 +3119,6 @@ function describeArmedConfig(cfg){
   if(cfg.forceAmmoReload)bits.push('Ammo');
   if(cfg.forceSheriffSequence)bits.push('Sheriff');
   if(cfg.rngSeed)bits.push(`seed ${cfg.rngSeed}`);
-  if(cfg.useDefaultRtp===false)bits.push(`RTP ${cfg.customRtp}%`);
   return bits.length?bits.join(' · '):'debug constraints only';
 }
 function syncForcedOutcomeInputs(source){
@@ -3284,8 +3286,8 @@ $('#speedSelect').addEventListener('change',e=>engine.debug.animationSpeed=Numbe
 $('#instantMode').addEventListener('change',e=>engine.debug.instant=e.target.checked);
 $('#stepMode').addEventListener('change',e=>{engine.debug.stepMode=e.target.checked;if(!e.target.checked)nextStep()});
 $('#nextEvent').addEventListener('click',nextStep);
-$('#useDefaultRtp').addEventListener('change',e=>{engine.setUseDefaultRtp(e.target.checked);$('#targetRtp').disabled=e.target.checked;updateDebugIndicator()});
-$('#targetRtp').addEventListener('input',e=>{engine.setCustomRtp(e.target.value);updateDebugIndicator()});
+$('#useDefaultRtp').addEventListener('change',e=>{engine.setUseDefaultRtp(e.target.checked);$('#targetRtp').disabled=e.target.checked;refs.status.textContent=e.target.checked?'DEFAULT RTP 96% ACTIVE':`CUSTOM RTP ${Number(engine.debug.customRtp||DEFAULT_RTP).toFixed(1)}% ACTIVE`;updateDebugIndicator()});
+$('#targetRtp').addEventListener('input',e=>{engine.setCustomRtp(e.target.value);refs.status.textContent=`CUSTOM RTP ${Number(engine.debug.customRtp||DEFAULT_RTP).toFixed(1)}% ACTIVE`;updateDebugIndicator()});
 $('#resetRtp').addEventListener('click',()=>{$('#targetRtp').value=DEFAULT_RTP;$('#useDefaultRtp').checked=true;$('#targetRtp').disabled=true;engine.setCustomRtp(DEFAULT_RTP);engine.setUseDefaultRtp(true);updateDebugIndicator()});
 $('#targetRtp').disabled=true;
 $('#forceWinX').addEventListener('input',()=>syncForcedOutcomeInputs('x'));

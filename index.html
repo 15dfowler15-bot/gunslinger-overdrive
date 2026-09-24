@@ -155,8 +155,8 @@ button,input,select{font:inherit}.cabinet-shell{width:min(1180px,96vw);margin:0 
         <div class="debug-presets" id="forcePresets">
           <button data-force-x="0">0x</button><button data-force-x="1">1x</button><button data-force-x="5">5x</button><button data-force-x="10">10x</button><button data-force-x="25">25x</button><button data-force-x="50">50x</button><button data-force-x="100">100x</button><button data-force-x="250">250x</button><button data-force-x="500">500x</button><button data-force-x="1000">1000x</button><button data-force-x="1000">MAX WIN</button>
         </div>
-        <button id="forceNextSpin" class="dev-action">ARM NEXT SPIN · ALL DEBUG INPUTS</button>
-        <p id="forceOutcomeStatus" class="hint">No next-spin override armed. Configure any debug inputs, then arm and press the normal SPIN button.</p>
+        <button id="forceNextSpin" class="dev-action">ARM NEXT SPIN · FORCE DEBUG</button>
+        <p id="forceOutcomeStatus" class="hint">Set a target/forced feature, arm it, then press SPIN. Target Win resolves exactly in debug mode.</p>
       </section>
 
       <section class="debug-card">
@@ -2255,14 +2255,18 @@ class SlotEngine {
     const credited=this.state.validationStatus==='PASS'?totalWin:0;
     resolution.paylineSummary=wins.map(w=>({lineIndex:w.lineIndex,symbol:w.symbol,count:w.count,basePayBP:w.basePayBP,finalPayBP:w.finalPayBP,featureMultiplier:w.featureMultiplier,amount:w.amount}));
     resolution.message=`${resolution.message} · ${wins.length} winning payline${wins.length===1?'':'s'} · Shooter Required: ${resolution.shooterRequired?'YES':'NO'} · xNudge Required: ${resolution.nudgeRequired?'YES':'NO'} · Multiplier Required: ${resolution.multiplierRequired?'YES':'NO'}`;
-    const result={sequenceId,totalWin:credited,respins:0,wins:deepClone(wins),state:this.snapshot(),seed:this.seed,volatility:this.debug.volatility,targetWinX:targetBP/100,resolvedWinX:resolution.resolvedBP/100,evaluatedWinX:evaluatedBP/100,validation:this.state.validationStatus,resolution:deepClone(resolution)};
+    const result={sequenceId,totalWin:credited,finalWinBP:evaluatedBP,respins:0,wins:deepClone(wins),state:this.snapshot(),seed:this.seed,volatility:this.debug.volatility,targetWinX:targetBP/100,resolvedWinX:resolution.resolvedBP/100,evaluatedWinX:evaluatedBP/100,validation:this.state.validationStatus,resolution:deepClone(resolution)};
     this.history.unshift(result);this.history=this.history.slice(0,100);return {events,result};
   }
 
   playSequence(opts={}) {
     if (this.scenario!=='random') return this.legacyPlaySequence(opts);
     const pending=this.peekPendingDebugSpin();
-    if(pending && pending.targetWinBP!==null && pending.targetWinBP!==undefined && Number.isFinite(Number(pending.targetWinBP))) return this.debugForcedTargetCycle(opts);
+    // FORCE OUTCOME is a deterministic debug tool, not normal gameplay math.
+    // When an exact target is armed, use the exact constraint resolver directly
+    // so the requested preset actually resolves instead of hoping a bounded RNG
+    // seed search happens to land on the exact final payout.
+    if(pending && pending.targetWinBP!==null && pending.targetWinBP!==undefined && Number.isFinite(Number(pending.targetWinBP))) return this.outcomeFirstSequence(opts);
     return this.rngGameCycleSequence(opts);
   }
 
